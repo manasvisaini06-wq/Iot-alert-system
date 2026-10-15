@@ -1,85 +1,67 @@
 # IoT Alert System
 
-A threshold-based monitoring service that watches sensor readings and
-fires alerts when something crosses a defined limit (temperature too
-high, humidity too high, or motion detected). This is the piece that
-ties Projects 1 and 2 together into one coherent story.
+A small program that keeps checking new sensor readings and prints an alert when something looks wrong: temperature too high, humidity too high, or motion detected. It reads the data from my `sensor-rest-api` project.
 
-## How the three projects fit together
+## What it does
 
+Every 3 seconds it asks the API for the latest readings, checks only the new ones, and raises an alert if a limit is crossed.
+
+| Check | Limit |
+|---|---|
+| High temperature | above 40 °C |
+| High humidity | above 80 % |
+| Motion | `motion_detected` is true |
+
+One reading can trigger more than one alert.
+
+## Block diagram
+
+```mermaid
+flowchart LR
+    A["Device or /docs page<br/>sends readings"] --> B[("sensor-rest-api<br/>port 8000")]
+    C["alert_system.py"] -->|"GET /readings every 3 sec"| B
+    C --> D{"Any limit crossed?<br/>temp > 40, humidity > 80, motion"}
+    D -->|"yes"| E["Print [ALERT] in the terminal"]
+    D -->|"yes, only if WEBHOOK_URL is set"| F["Send message to Slack / Discord"]
 ```
-Project 1: publisher.py  --sends readings-->  Project 2: Sensor REST API (stores in SQLite)
-                                                        |
-                                                        | polls for new readings
-                                                        v
-                                              Project 3: alert_system.py
-                                                        |
-                                                        v
-                                          console log  /  webhook (Slack/Discord)
-```
 
-Project 1 showed a device sending data and a simple live dashboard.
-Project 2 showed the same data properly stored and queryable through a
-real API. This project shows the piece both of those only hinted at
-(a `print()` inside an `if motion_detected` block) built out as its
-own real, standalone service -- polling the API, checking rules, and
-alerting through multiple channels.
+## How to run
 
-## How to run it
-
-1. Make sure Project 2's API is running first:
+1. Start the `sensor-rest-api` project first (inside its folder):
    ```
-   cd sensor-rest-api
    uvicorn main:app --reload
    ```
-2. In a separate terminal, install and run this project:
+2. In another terminal, in this folder:
    ```
    pip install -r requirements.txt
    python alert_system.py
    ```
-3. Feed it data -- either post readings manually via
-   `http://127.0.0.1:8000/docs`, or edit Project 1's `publisher.py` to
-   POST to `http://127.0.0.1:8000/readings` instead of the dashboard's
-   `/api/ingest` (the payload shape is nearly identical).
-4. Watch the alert terminal -- readings that cross a threshold print
-   an `[ALERT]` line; normal readings print nothing.
+3. Add a reading with a high temperature, for example 42, or with `motion_detected` as true. You can do this on http://127.0.0.1:8000/docs with POST `/readings`. An `[ALERT]` line should appear within a few seconds.
 
-### Optional: send alerts to Slack/Discord too
+Optional: to also get alerts in Slack or Discord, set an environment variable called `WEBHOOK_URL` to your webhook link before running. If it is not set, alerts only print in the terminal.
 
-Set the `WEBHOOK_URL` environment variable to a Slack or Discord
-incoming webhook URL before running the script, and alerts will also
-be POSTed there, e.g. (Mac/Linux):
-```
-export WEBHOOK_URL="https://discord.com/api/webhooks/..."
-python alert_system.py
-```
-On Windows (cmd): `set WEBHOOK_URL=https://...` before running.
-If unset, alerts simply print to the console only -- this keeps the
-project runnable with zero external setup.
+## Built with
 
-## Design notes / talking points for interviews
+Python, requests
 
-- **Why polling instead of a push-based approach?** Polling is the
-  simplest way to decouple this service from the API -- it doesn't
-  need the API to know it exists. A more advanced version could use
-  webhooks (the API calls this service when new data arrives) or a
-  message queue, which would reduce latency and load, at the cost of
-  more moving parts.
-- **Why track `last_seen_id` instead of just re-checking everything
-  every time?** Without it, the same high-temperature reading would
-  re-trigger an alert on every single poll (every 3 seconds), which
-  would spam whoever receives the alert. Tracking the last processed
-  id ensures each reading is only ever evaluated once.
-- **Why is the webhook optional via an environment variable, instead
-  of hardcoded?** Keeps secrets/URLs out of the code (you'd never want
-  to commit a real webhook URL to a public GitHub repo), and lets the
-  same script run with or without that integration configured.
-- **Why check multiple thresholds per reading instead of stopping at
-  the first match?** A single reading could violate more than one rule
-  at once (e.g. high temp AND motion) -- `check_thresholds` returns a
-  list so nothing gets silently missed.
-- **Known limitations / next steps:** thresholds are hardcoded rather
-  than configurable per device or stored in a database; there's no
-  "alert cooldown" beyond deduplication by id (a device stuck reading
-  41\u00b0C repeatedly would still fire once per new reading, not once
-  per incident); no persistent log of past alerts.
+## What I learned
+
+- **Polling.** The program asks the API again and again instead of the API telling it about new data. It is simple and works, but it is not instant, and it makes many requests.
+- **No repeated alerts.** The API always sends the latest 20 readings, so the same reading would show up again and again. I remember the highest reading id already checked (`last_seen_id`) and skip anything older.
+- **Alerts should not crash the program.** If the webhook is not reachable, it prints a message and keeps running.
+- **Keeping parts separate.** `check_thresholds()` only decides if something is wrong, and `send_alert()` only sends the message. A new channel like email can be added without touching the checking code.
+
+## Limits
+
+- The limits are fixed in the code. A real product would let each device have its own limits.
+- It does not remember anything after a restart, so it starts checking from the beginning again.
+- It prints an alert for every reading that crosses a limit, so a long hot period gives many alerts.
+
+## How my projects fit together
+
+1. `iot-simulator-dashboard` makes fake readings and shows them live.
+2. `sensor-rest-api` stores the readings in a database.
+3. `iot-alert-system` (this project) watches the stored readings and raises alerts.
+4. `sensor-anomaly-detection` learns what normal readings look like. It could later replace the fixed limits used here.
+
+To send the simulator's readings to the API, change the URL in `publisher.py` to `http://127.0.0.1:8000/readings`.
